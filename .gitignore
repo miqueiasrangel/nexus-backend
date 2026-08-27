@@ -1,0 +1,23 @@
+# Dependências
+node_modules/
+
+# Variáveis de ambiente e segredos
+.env
+.env.local
+.env.*.local
+*.env
+credentials/google.json
+!credentials/google.json.example
+
+# Uploads temporários
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE e sistema
+.vscode/
+.idea/
+.DS_Store
