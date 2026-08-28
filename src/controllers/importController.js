@@ -1,7 +1,7 @@
 const { lerCSV } = require('../services/csvService');
 const { lerXLS } = require('../services/xlsService');
 const { prepararMapaXLS, cruzarDados } = require('../services/mergeService');
-const { inserirFuncionario } = require('../services/employeeService');
+const { inserirFuncionariosEmLote } = require('../services/employeeService');
 const { sincronizarPlanilha } = require('../services/googleSheetsService');
 
 async function importarArquivos(req, res) {
@@ -34,7 +34,6 @@ async function importarArquivos(req, res) {
     console.log("CSV:", dadosCSV.length);
     console.log("XLS:", dadosXLS.length);
     console.log("REGISTROS VÁLIDOS:", registrosValidos.length);
-    console.log("🚀 Servidor rodando na porta 3333");
 
     if (!registrosValidos.length) {
       return res.status(200).json({
@@ -43,8 +42,8 @@ async function importarArquivos(req, res) {
       });
     }
 
-    // SINCRONIZAÇÃO POSTGRES
-    const banco = {
+    // SINCRONIZAÇÃO POSTGRES OTIMIZADA EM LOTE (BULK INSERT)
+    let banco = {
       inseridos: 0,
       atualizados: 0,
       ignorados: 0,
@@ -52,23 +51,14 @@ async function importarArquivos(req, res) {
       total: registrosValidos.length
     };
 
-    for (const funcionario of registrosValidos) {
-      try {
-        const status = await inserirFuncionario(funcionario);
-        if (status === 'inserido') {
-          banco.inseridos++;
-        } else if (status === 'atualizado') {
-          banco.atualizados++;
-        } else {
-          banco.ignorados++;
-        }
-      } catch (err) {
-        banco.erros++;
-        console.error(`Erro ao inserir matrícula ${funcionario.matricula}:`, err.message);
-      }
+    try {
+      banco = await inserirFuncionariosEmLote(registrosValidos);
+    } catch (err) {
+      console.error("Erro ao sincronizar banco de dados em lote:", err.message);
+      banco.erros = registrosValidos.length;
     }
 
-    console.log("Sincronização ao banco de dados concluida.");
+    console.log("Sincronização ao banco de dados concluída em lote.");
 
     // SINCRONIZAÇÃO GOOGLE SHEETS
     const spreadsheetId = process.env.GOOGLE_SHEET_ID;
@@ -92,7 +82,6 @@ async function importarArquivos(req, res) {
     }
 
     console.log("Sincronização com planilha concluída.");
-
 
     // RESPOSTA FINAL
     return res.json({
