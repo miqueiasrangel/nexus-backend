@@ -1,6 +1,6 @@
 # ⚙️ Nexus Backend — API de Automação & Sincronização
 
-API REST em **Node.js** com **Express**, integrada ao **PostgreSQL** e **Google Sheets API**. O backend é responsável pela leitura de arquivos CSV/TXT, cruzamento de dados com tabelas Excel (XLSX) através do código de barras e sincronização automática multi-destino.
+API REST em **Node.js** com **Express**, integrada ao **PostgreSQL** e **Google Sheets API**. O backend possui um fluxo unificado para o SEST: recebe a planilha cadastral semanal em Excel, coleta automaticamente os dois REPs, cruza os dados pela matrícula e sincroniza os destinos.
 
 ---
 
@@ -106,13 +106,30 @@ PORT=3333
 # PostgreSQL
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=nexus
+# Banco que contém os schemas autenticacao/colaborador do ambiente de teste
+DB_NAME=nome_do_banco_seest_local
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 
 # Google Sheets (Opcional)
 GOOGLE_SHEET_ID=ID_DA_PLANILHA_NO_GOOGLE
 GOOGLE_SHEET_NAME=NomeDaAba
+
+# REPs do SEST
+REP_1_HOST=10.110.40.7
+REP_1_USER=usuario_do_rep_1
+REP_1_PASSWORD=senha_do_rep_1
+REP_2_HOST=10.110.40.15
+REP_2_USER=usuario_do_rep_2
+REP_2_PASSWORD=senha_do_rep_2
+REP_TLS_VERIFY=false
+REP_INSECURE_HTTP_PARSER=true
+
+# Regras da sincronização
+SEST_SYNC_USER=SISTEMA_NEXUS_SEST
+# A planilha semanal é um snapshot completo do SEST.
+SEST_REMOVE_MISSING=true
+SEST_SHEET_REMOVE_MISSING=true
 ```
 
 ---
@@ -144,7 +161,7 @@ GOOGLE_SHEET_NAME=NomeDaAba
 
 ## 📡 Rota da API
 
-### `POST /importar`
+### `POST /api/importar`
 Recebe arquivos multipart/form-data:
 - `csv` (Arquivo CSV/TXT 1)
 - `csv2` (Arquivo CSV/TXT 2 - Opcional)
@@ -171,3 +188,20 @@ Recebe arquivos multipart/form-data:
   }
 }
 ```
+
+### POST /api/sincronizacoes/sest
+
+Recebe a planilha cadastral semanal (`.xlsx`, `.xls` ou `.csv`) no campo multipart `base`. Para Excel, o backend localiza a aba que possui os campos cadastrais, mesmo que ela não seja a primeira aba. Durante a operação, coleta os dois REPs configurados, cruza a base pela CHAPA/matrícula, atualiza as tabelas existentes e sincroniza o Google Sheets no formato:
+
+~~~text
+SETOR | NOME | GESTOR | TURNO | CHAPA | RFID | BARRAS
+~~~
+
+O campo multipart `dryRun=true` executa apenas a validação e o cruzamento, sem alterar banco ou planilha.
+
+O cruzamento aplica a seguinte prioridade: matrícula exata da base, sufixo da
+matrícula composta do REP, `BARRAS` da base quando disponível e, por último,
+nome único normalizado. Um registro secundário de menor confiança não
+sobrescreve o registro escolhido; ele aparece em
+`inconsistencias.divergenciasResolvidas`. Divergências entre registros com a
+mesma confiança continuam retornando HTTP 422 e nenhum destino é alterado.

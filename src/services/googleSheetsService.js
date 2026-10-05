@@ -152,4 +152,159 @@ async function sincronizarPlanilha(spreadsheetId, sheetName, funcionarios) {
   };
 }
 
-module.exports = { sincronizarPlanilha };
+const CABECALHO_SEST = [
+  'SETOR',
+  'NOME',
+  'GESTOR',
+  'TURNO',
+  'CHAPA',
+  'RFID',
+  'BARRAS'
+];
+
+function normalizarCabecalhoPlanilha(valor) {
+  return normalizar(valor)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+}
+
+function prefixoPlanilha(sheetName) {
+  const nome = String(sheetName).replace(/'/g, "''");
+  return "'" + nome + "'";
+}
+
+function linhaSEST(funcionario) {
+  const turno = normalizar(funcionario.turno) || calcularTurno(
+    funcionario.setor || funcionario.nome_setor
+  );
+
+  return [
+    normalizar(
+      funcionario.setor_exibicao || funcionario.setor || funcionario.nome_setor
+    ),
+    normalizar(funcionario.nome_exibicao || funcionario.nome),
+    normalizar(funcionario.gerente_exibicao || funcionario.gerente),
+    turno,
+    normalizar(funcionario.matricula),
+    normalizar(funcionario.rfid),
+    normalizar(funcionario.codbarras || funcionario.barras)
+  ];
+}
+
+function obterLinhaPorCabecalho(linha, indices) {
+  return CABECALHO_SEST.map((cabecalho) => {
+    const indice = indices[normalizarCabecalhoPlanilha(cabecalho)];
+    return indice === undefined ? '' : normalizar(linha[indice]);
+  });
+}
+
+function linhasIguais(linhaA, linhaB) {
+  return linhaA.length === linhaB.length &&
+    linhaA.every((valor, indice) => normalizar(valor) === normalizar(linhaB[indice]));
+}
+
+async function sincronizarPlanilhaSEST(spreadsheetId, sheetName, funcionarios, opcoes = {}) {
+  const sheets = await getSheets();
+  const prefixo = prefixoPlanilha(sheetName);
+  const rangeCompleto = prefixo + '!A:Z';
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: rangeCompleto
+  });
+
+  const linhasAtuais = response.data.values || [];
+  let indices = {};
+  let linhasExistentes = [];
+
+  if (linhasAtuais.length > 0) {
+    const cabecalhoAtual = linhasAtuais[0].map(normalizarCabecalhoPlanilha);
+    cabecalhoAtual.forEach((cabecalho, indice) => {
+      if (cabecalho) indices[cabecalho] = indice;
+    });
+
+    const ausentes = CABECALHO_SEST.filter(
+      (cabecalho) => indices[normalizarCabecalhoPlanilha(cabecalho)] === undefined
+    );
+
+    if (ausentes.length > 0) {
+      throw new Error(
+        'O cabeçalho da planilha SEST não possui as colunas: ' + ausentes.join(', ')
+      );
+    }
+
+    linhasExistentes = linhasAtuais
+      .slice(1)
+      .filter((linha) => linha.some((valor) => normalizar(valor)));
+  }
+
+  const existentesPorChapa = new Map();
+  for (const linha of linhasExistentes) {
+    const linhaPadronizada = obterLinhaPorCabecalho(linha, indices);
+    const chapa = normalizar(linhaPadronizada[4]);
+    if (chapa) existentesPorChapa.set(chapa, linhaPadronizada);
+  }
+
+  const linhasResultado = [CABECALHO_SEST];
+  const chapasProcessadas = new Set();
+  let inseridos = 0;
+  let atualizados = 0;
+  let ignorados = 0;
+
+  for (const funcionario of funcionarios) {
+    const novaLinha = linhaSEST(funcionario);
+    const chapa = normalizar(novaLinha[4]);
+    const linhaAtual = existentesPorChapa.get(chapa);
+
+    if (!linhaAtual) {
+      inseridos++;
+    } else if (linhasIguais(linhaAtual, novaLinha)) {
+      ignorados++;
+    } else {
+      atualizados++;
+    }
+
+    chapasProcessadas.add(chapa);
+    linhasResultado.push(novaLinha);
+  }
+
+  if (!opcoes.removerAusentes) {
+    for (const linha of existentesPorChapa.values()) {
+      const chapa = normalizar(linha[4]);
+      if (!chapasProcessadas.has(chapa)) {
+        linhasResultado.push(linha);
+      }
+    }
+  }
+
+  if (linhasAtuais.length > linhasResultado.length) {
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: prefixo + '!A' + (linhasResultado.length + 1) + ':G' + linhasAtuais.length
+    });
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: prefixo + '!A1',
+    valueInputOption: 'RAW',
+    requestBody: {
+      values: linhasResultado
+    }
+  });
+
+  return {
+    status: 'concluida',
+    inseridos,
+    atualizados,
+    ignorados,
+    erros: 0,
+    total: funcionarios.length
+  };
+}
+
+module.exports = {
+  sincronizarPlanilha,
+  sincronizarPlanilhaSEST
+};
